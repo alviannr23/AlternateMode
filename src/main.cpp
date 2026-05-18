@@ -4,167 +4,103 @@
 
 using namespace geode::prelude;
 
-// STATE DATA
-struct State {
-    bool hasPressed = false;
-    int lastPlayer = 0;
-    bool inputLocked = false;
-};
+static bool isEnabled() {
+    return Mod::get()->getSettingValue<bool>("mod-enabled");
+}
 
-static std::unordered_map<GJBaseGameLayer*, State> states;
-
-// INPUT LOGIC
-class $modify(AlternateModeInput, GJBaseGameLayer) {
-
-    CCLabelBMFont* getOverlay() {
-        return typeinfo_cast<CCLabelBMFont*>(
-            this->getChildByID("alternate-overlay"_spr)
-        );
-    }
-
-    void setOverlayColor(ccColor3B color) {
-        if (auto label = getOverlay())
-            label->setColor(color);
-    }
-
-    void setOverlayText(const char* text) {
-        if (auto label = getOverlay())
-            label->setString(text);
-    }
-
-    void setOverlayVisible(bool v) {
-        if (auto label = getOverlay())
-            label->setVisible(v);
-    }
-
-    void killIfHardMode() {
-        if (!Mod::get()->getSettingValue<bool>("hard-mode"))
-            return;
-
-        if (m_player1)
-            this->destroyPlayer(m_player1, nullptr);
-    }
-
-    void handleButton(bool down, int button, bool player1) {
-        auto& st = states[this];
-
-        bool enabled = Mod::get()->getSettingValue<bool>("enabled");
-
-        // OVERLAY VISIBLE
-        setOverlayVisible(enabled);
-
-        if (!enabled) {
-            GJBaseGameLayer::handleButton(down, button, player1);
-            return;
-        }
-
-        int cur = player1 ? 1 : 2;
-
-        // DOUBLE INPUT CHECK
-        if (down) {
-            if (st.inputLocked) {
-                setOverlayColor(ccc3(255, 0, 0));
-                killIfHardMode();
-                return;
-            }
-            st.inputLocked = true;
-        } else {
-            st.inputLocked = false;
-        }
-
-        // RESET COLOR ON RELEASE
-        if (!down) {
-            setOverlayColor(ccc3(255, 255, 255));
-            GJBaseGameLayer::handleButton(down, button, player1);
-            return;
-        }
-
-        // FIRST INPUT
-        if (!st.hasPressed) {
-            st.hasPressed = true;
-            st.lastPlayer = cur;
-            setOverlayColor(ccc3(0, 255, 0));
-            setOverlayText(cur == 1 ? "P1" : "P2");
-            GJBaseGameLayer::handleButton(down, button, player1);
-            return;
-        }
-
-        // SAME PLAYER TWICE
-        if (cur == st.lastPlayer) {
-            setOverlayColor(ccc3(255, 0, 0));
-            killIfHardMode();
-            return;
-        }
-
-        st.lastPlayer = cur;
-
-        setOverlayColor(ccc3(0, 255, 0));
-        setOverlayText(cur == 1 ? "P1" : "P2");
-        GJBaseGameLayer::handleButton(down, button, player1);
-    }
-};
-
-// OVERLAY
-class $modify(AlternateModePlayLayer, PlayLayer) {
-
-    ~AlternateModePlayLayer() {
-        states.erase(this);
-    }
+// indicator setup + track alternating state (reset when death)
+class $modify(AlternatePlayLayer, PlayLayer) {
+    struct Fields {
+        int lastPlayer = 0;
+        bool inputLocked = false;
+    };
 
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
-        if (!PlayLayer::init(level, useReplay, dontCreateObjects))
-            return false;
-
-        auto& st = states[this];
-        st.hasPressed = false;
-        st.lastPlayer = 0;
-        st.inputLocked = false;
-
-        auto enabled = Mod::get()->getSettingValue<bool>("enabled");
-        auto show = Mod::get()->getSettingValue<bool>("show-indicator");
-
-        if (!show)
-            return true;
+        if (!PlayLayer::init(level, useReplay, dontCreateObjects)) return false;
+        if (!Mod::get()->getSettingValue<bool>("show-indicator")) return true;
 
         auto winSize = CCDirector::sharedDirector()->getWinSize();
         auto label = CCLabelBMFont::create("N/A", "bigFont.fnt");
-        if (!label)
-            return true;
+        label->setID("alternate-indicator"_spr);
 
-        label->setID("alternate-overlay"_spr);
-
-        float scale = Mod::get()->getSettingValue<double>("overlay-scale");
-        float oy    = Mod::get()->getSettingValue<double>("overlay-offset-y");
-
-        if (scale == 1.0f)
-            scale = 0.5f;
+        float scale = Mod::get()->getSettingValue<double>("indicator-scale");
+        float oy = Mod::get()->getSettingValue<double>("indicator-offset-y");
 
         label->setScale(scale);
-        label->setColor(ccc3(255, 255, 255));
         label->setAnchorPoint(ccp(0.5f, 0.f));
         label->setPosition(ccp(winSize.width / 2, 20.f + oy));
-
-        // HIDDEN LABEL
-        label->setVisible(enabled);
+        label->setVisible(isEnabled());
         this->addChild(label, 999);
-
         return true;
     }
 
     void resetLevel() {
         PlayLayer::resetLevel();
-
-        auto& st = states[this];
-        st.hasPressed = false;
-        st.lastPlayer = 0;
-        st.inputLocked = false;
-        auto label = typeinfo_cast<CCLabelBMFont*>(
-            this->getChildByID("alternate-overlay"_spr)
-        );
-
+        m_fields->lastPlayer = 0;
+        m_fields->inputLocked = false;
+        auto label = typeinfo_cast<CCLabelBMFont*>(this->getChildByID("alternate-indicator"_spr));
         if (label) {
             label->setString("N/A");
             label->setColor(ccc3(255, 255, 255));
         }
+    }
+};
+
+// blocks input if same player pressed twice in a row
+class $modify(AlternateInput, GJBaseGameLayer) {
+    CCLabelBMFont* getIndicator() {
+        return typeinfo_cast<CCLabelBMFont*>(this->getChildByID("alternate-indicator"_spr));
+    }
+    void setIndicatorColor(ccColor3B color) {
+        if (auto label = getIndicator()) label->setColor(color);
+    }
+    void killIfHardMode() {
+        if (!Mod::get()->getSettingValue<bool>("hard-mode")) return;
+        if (m_player1) this->destroyPlayer(m_player1, nullptr);
+    }
+    void handleButton(bool down, int button, bool player1) {
+        auto play = typeinfo_cast<PlayLayer*>(this);
+        if (!play) {
+            GJBaseGameLayer::handleButton(down, button, player1);
+            return;
+        }
+        bool enabled = isEnabled();
+        auto label = getIndicator();
+        if (label) label->setVisible(enabled);
+        if (!enabled) {
+            GJBaseGameLayer::handleButton(down, button, player1);
+            return;
+        }
+
+        // cast to modify the class to access m_fields
+        auto* mod = static_cast<AlternatePlayLayer*>(play);
+
+        // hold = blocked second input, release = unblock.
+        if (!down) {
+            mod->m_fields->inputLocked = false;
+            setIndicatorColor(ccc3(255, 255, 255));
+            GJBaseGameLayer::handleButton(down, button, player1);
+            return;
+        }
+        if (mod->m_fields->inputLocked) {
+            setIndicatorColor(ccc3(255, 0, 0));
+            killIfHardMode();
+            return;
+        }
+        mod->m_fields->inputLocked = true;
+
+        int cur = player1 ? 1 : 2;
+
+        // same player pressed twice = DIE
+        if (cur == mod->m_fields->lastPlayer) {
+            setIndicatorColor(ccc3(255, 0, 0));
+            killIfHardMode();
+            return;
+        }
+
+        mod->m_fields->lastPlayer = cur;
+        setIndicatorColor(ccc3(0, 255, 0));
+        if (label) label->setString(cur == 1 ? "P1" : "P2");
+        GJBaseGameLayer::handleButton(down, button, player1);
     }
 };
